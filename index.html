@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Gemini 宇宙指挥官 - 数字形态修复版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
+        #status {
+            position: absolute; top: 20px; left: 20px;
+            color: #fff; text-shadow: 0 0 10px #00ffff; z-index: 100; pointer-events: none;
+            background: rgba(0, 0, 0, 0.5); padding: 12px; border-radius: 8px; line-height: 1.5;
+        }
+        #fs-btn {
+            position: absolute; top: 20px; right: 20px;
+            padding: 10px 18px; background: rgba(0, 255, 255, 0.1);
+            color: #00ffff; border: 1px solid #00ffff; border-radius: 4px;
+            cursor: pointer; z-index: 101;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">
+        系统就绪：<br>
+        手指 1/2/3：显示清晰数字 | 张开手掌：漫天星辰 (推拉控制)<br>
+        握拳：静态巨型土星环 (撑满屏幕)
+    </div>
+    <button id="fs-btn">进入全屏</button>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
+
+        const PARTICLE_COUNT = 25000;
+        let scene, camera, renderer, particles, handLandmarker;
+        let currentState = 'scatter'; 
+        let lastVideoTime = -1;
+
+        // --- 核心：数字路径点阵生成器 ---
+        function generateTargets() {
+            const data = { scatter: [], fist: [], num1: [], num2: [], num3: [], colors: [] };
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                // 1. 漫天星辰
+                data.scatter.push(new THREE.Vector3((Math.random()-0.5)*250, (Math.random()-0.5)*180, (Math.random()-0.5)*100));
+
+                // 2. 巨型土星 (撑满屏幕)
+                let pFist = new THREE.Vector3();
+                if (i < 8000) {
+                    const phi = Math.acos(-1 + (2 * i) / 8000);
+                    const theta = Math.sqrt(8000 * Math.PI) * phi;
+                    pFist.setFromSphericalCoords(22, phi, theta);
+                } else {
+                    const angle = Math.random() * Math.PI * 2;
+                    const radius = 32 + Math.random() * 45;
+                    pFist.set(Math.cos(angle) * radius, (Math.random()-0.5)*0.8, Math.sin(angle) * radius);
+                }
+                data.fist.push(pFist);
+
+                // --- 数字路径算法 (修复圆环Bug) ---
+                const ratio = i / PARTICLE_COUNT;
+                
+                // 数字 1：简单的垂直长条
+                data.num1.push(new THREE.Vector3((Math.random()-0.5)*2, (ratio-0.5)*60, (Math.random()-0.5)*2));
+
+                // 数字 2：S型曲线笔画
+                let p2 = new THREE.Vector3();
+                if (ratio < 0.4) { // 顶部半圆
+                    const a = ratio * (Math.PI / 0.4);
+                    p2.set(Math.cos(a)*15 + 5, Math.sin(a)*15 + 15, 0);
+                } else if (ratio < 0.8) { // 中间斜杠
+                    const t = (ratio - 0.4) / 0.4;
+                    p2.set(20 - t*35, 15 - t*45, 0);
+                } else { // 底部横线
+                    const t = (ratio - 0.8) / 0.2;
+                    p2.set(-15 + t*40, -30, 0);
+                }
+                p2.add(new THREE.Vector3((Math.random()-0.5)*3, (Math.random()-0.5)*3, (Math.random()-0.5)*3));
+                data.num2.push(p2);
+
+                // 数字 3：两个半圆
+                let p3 = new THREE.Vector3();
+                if (ratio < 0.5) { // 上半圆
+                    const a = -Math.PI/2 + ratio * (Math.PI * 1.5 / 0.5);
+                    p3.set(Math.cos(a)*15, Math.sin(a)*15 + 15, 0);
+                } else { // 下半圆
+                    const a = -Math.PI/2 + (ratio-0.5) * (Math.PI * 1.5 / 0.5);
+                    p3.set(Math.cos(a)*18, Math.sin(a)*18 - 15, 0);
+                }
+                p3.add(new THREE.Vector3((Math.random()-0.5)*3, (Math.random()-0.5)*3, (Math.random()-0.5)*3));
+                data.num3.push(p3);
+
+                const col = new THREE.Color().setHSL(0.5 + Math.random()*0.1, 0.8, 0.6);
+                data.colors.push(col.r, col.g, col.b);
+            }
+            return data;
+        }
+        const targets = generateTargets();
+
+        const btn = document.getElementById('fs-btn');
+        btn.onclick = () => {
+            if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+            else document.exitFullscreen();
+        };
+
+        async function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 3000);
+            camera.position.z = 100;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(PARTICLE_COUNT * 3), 3));
+            geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(targets.colors), 3));
+            
+            particles = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.35, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
+            scene.add(particles);
+
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 1
+            });
+            startCamera();
+        }
+
+        async function startCamera() {
+            const video = document.createElement('video');
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+            video.srcObject = stream;
+            video.play();
+            video.onloadeddata = () => renderLoop(video);
+        }
+
+        function getGesture(landmarks) {
+            const isExt = (tip, pip) => landmarks[tip].y < landmarks[pip].y;
+            const i = isExt(8, 6), m = isExt(12, 10), r = isExt(16, 14), p = isExt(20, 18);
+            
+            let dist = 0;
+            [8, 12, 16, 20].forEach(t => dist += Math.hypot(landmarks[t].x - landmarks[0].x, landmarks[t].y - landmarks[0].y));
+            
+            if (dist < 0.45) return 'fist';
+            if (i && !m && !r && !p) return '1';
+            if (i && m && !r && !p) return '2';
+            if (i && m && r && !p) return '3';
+            return 'scatter';
+        }
+
+        function renderLoop(video) {
+            if (video.currentTime !== lastVideoTime) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    const hand = results.landmarks[0];
+                    currentState = getGesture(hand);
+
+                    // 深度控制逻辑
+                    let targetZ = 80;
+                    if (currentState === 'scatter') targetZ = 30 + (hand[9].z + 0.1) * 550;
+                    else if (currentState === 'fist') targetZ = 55;
+                    camera.position.z += (targetZ - camera.position.z) * 0.1;
+                }
+                lastVideoTime = video.currentTime;
+            }
+
+            const posArr = particles.geometry.attributes.position.array;
+            const targetSet = targets[currentState === '1'?'num1':currentState === '2'?'num2':currentState === '3'?'num3':currentState === 'fist'?'fist':'scatter'];
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const i3 = i * 3;
+                const t = targetSet[i];
+                // 增加一点平滑扰动，让数字看起来更有“能量感”
+                const wobble = (currentState.includes('num')) ? Math.sin(Date.now()*0.002 + i)*0.2 : 0;
+                
+                posArr[i3] += (t.x - posArr[i3]) * 0.12;
+                posArr[i3+1] += (t.y + wobble - posArr[i3+1]) * 0.12;
+                posArr[i3+2] += (t.z - posArr[i3+2]) * 0.12;
+            }
+            
+            particles.geometry.attributes.position.needsUpdate = true;
+            renderer.render(scene, camera);
+            requestAnimationFrame(() => renderLoop(video));
+        }
+
+        init();
+        window.onresize = () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        };
+    </script>
+</body>
+</html>
